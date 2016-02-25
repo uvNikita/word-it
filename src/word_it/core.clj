@@ -1,8 +1,7 @@
 (ns word-it.core
   (:gen-class))
 
-(require '[clojure.string :as str]
-         '[clojure.set :as set])
+(require '[clojure.string :as str])
 
 (defn read-words
   [filename]
@@ -11,8 +10,7 @@
                      (map str/trim)
                      (filter not-empty)
                      (map #(str/split % #" - ")))]
-      (into [] trans)
-      )))
+      (into [] trans))))
 
 
 (defn ask
@@ -32,9 +30,9 @@
 
 
 (defn -main [filename & args]
-  (let [ norsk-eng (read-words filename)
+  (let [norsk-eng (read-words filename)
         dicts {:norsk norsk-eng
-               :eng (map (fn [[norsk, eng]] [eng, norsk]) norsk-eng)}
+               :eng   (map (fn [[norsk, eng]] [eng, norsk]) norsk-eng)}
         total (atom 0)
         wrong (atom 0)]
     (loop [lang (rand-nth [:norsk :eng])]
