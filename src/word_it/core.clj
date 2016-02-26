@@ -9,6 +9,7 @@
     (let [trans (->> (line-seq rdr)
                      (map str/trim)
                      (filter not-empty)
+                     (filter #(not (.startsWith % "#")))
                      (map #(str/split % #" - ")))]
       (into [] trans))))
 
