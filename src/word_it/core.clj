@@ -6,7 +6,11 @@
 (defn read-dict
   [filename]
   (with-open [rdr (clojure.java.io/reader filename)]
-    (let [trans (->> (line-seq rdr)
+    (let [lines (line-seq rdr)
+          header (first lines)
+          [from, to] (str/split header #" -> ")
+          dict-lines (rest lines)
+          trans (->> dict-lines
                      (map str/trim)
                      (filter not-empty)
                      (filter #(not (.startsWith % "#")))
@@ -15,17 +19,14 @@
                             (->> line
                                  (map #(str/split % #","))
                                  (map #(map str/trim %))))))]
-      (into [] trans))))
+      {:from from, :to to, :dict (into [] trans)})))
 
 
 (defn ask
-  [dicts lang]
-  (let [[words, translations] (rand-nth (dicts lang))
-        [word-lang-name, trans-lang-name] (case lang
-                                            :norsk ["norsk", "eng"]
-                                            :eng ["eng", "norsk"])]
-    (println (str word-lang-name, ":\t", (str/join ", " words)))
-    (let [answer (do (print (str trans-lang-name, ":\t"))
+  [dicts lang-from lang-to]
+  (let [[words, translations] (rand-nth (dicts lang-from))]
+    (println (str lang-from, ":\t", (str/join ", " words)))
+    (let [answer (do (print (str lang-to, ":\t"))
                      (flush)
                      (str/trim (read-line)))]
       (cond
@@ -35,19 +36,19 @@
 
 
 (defn -main [filename & args]
-  (let [norsk-eng (read-dict filename)
-        dicts {:norsk norsk-eng
-               :eng   (map (fn [[norsk, eng]] [eng, norsk]) norsk-eng)}
+  (let [{from :from, to :to, norsk-eng :dict} (read-dict filename)
+        dicts {from norsk-eng
+               to   (map (fn [[norsk, eng]] [eng, norsk]) norsk-eng)}
         total (atom 0)
         wrong (atom 0)]
-    (loop [lang (rand-nth [:norsk :eng])]
+    (loop [[from-lang, lang-to] (shuffle [from, to])]
       (println)
-      (case (ask dicts lang)
+      (case (ask dicts from-lang lang-to)
         :correct (do
                    (swap! total inc)
-                   (recur (rand-nth [:norsk :eng])))
+                   (recur (shuffle [from, to])))
         :wrong (do
                  (swap! total inc)
                  (swap! wrong inc)
-                 (recur (rand-nth [:norsk :eng])))
+                 (recur (shuffle [from, to])))
         :quit (println "Total:" @total "wrong:", @wrong)))))
