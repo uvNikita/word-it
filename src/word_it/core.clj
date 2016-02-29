@@ -1,7 +1,8 @@
 (ns word-it.core
   (:gen-class))
 
-(require '[clojure.string :as str])
+(require '[clojure.string :as str]
+         '[word-it.extensions :as ext])
 
 (defn read-dict
   [filename]
@@ -24,11 +25,18 @@
 
 (defn ask
   [dicts lang-from lang-to]
-  (let [[words, translations] (rand-nth (dicts lang-from))]
+  (let [[words, translations] (rand-nth (dicts lang-from))
+        transformation (get ext/transformations
+                            [lang-from lang-to]
+                            (constantly identity))
+        transform (apply comp (map transformation words))
+        translations (map transform translations)]
     (println (str lang-from, ":\t", (str/join ", " words)))
     (let [answer (do (print (str lang-to, ":\t"))
                      (flush)
-                     (str/trim (read-line)))]
+                     (-> (read-line)
+                         str/trim
+                         transform))]
       (cond
         (some #(= answer %) translations) :correct
         (= answer "quit") :quit
