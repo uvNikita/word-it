@@ -44,9 +44,10 @@
 
 
 (defn -main [filename & args]
-  (let [{from :from, to :to, norsk-eng :dict} (read-dict filename)
-        dicts {from norsk-eng
-               to   (map (fn [[norsk, eng]] [eng, norsk]) norsk-eng)}
+  (let [{from :from, to :to, dict :dict} (read-dict filename)
+        dicts {from dict
+               to   (map (fn [[from-words, to-words]] [to-words, from-words])
+                         dict)}
         total (atom 0)
         wrong (atom 0)]
     (loop [[from-lang, lang-to] (shuffle [from, to])]
