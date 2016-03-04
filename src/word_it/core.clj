@@ -47,17 +47,12 @@
   (let [{from :from, to :to, dict :dict} (read-dict filename)
         dicts {from dict
                to   (map (fn [[from-words, to-words]] [to-words, from-words])
-                         dict)}
-        total (atom 0)
-        wrong (atom 0)]
-    (loop [[from-lang, lang-to] (shuffle [from, to])]
+                         dict)}]
+    (loop [[from-lang, lang-to] (shuffle [from, to])
+           total 0
+           wrong 0]
       (println)
       (case (ask dicts from-lang lang-to)
-        :correct (do
-                   (swap! total inc)
-                   (recur (shuffle [from, to])))
-        :wrong (do
-                 (swap! total inc)
-                 (swap! wrong inc)
-                 (recur (shuffle [from, to])))
-        :quit (println "Total:" @total "wrong:", @wrong)))))
+        :correct (recur (shuffle [from, to]) (inc total) wrong)
+        :wrong (recur (shuffle [from, to]) (inc total) (inc wrong))
+        :quit (println "Total:" total "wrong:", wrong)))))
