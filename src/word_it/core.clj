@@ -1,8 +1,15 @@
 (ns word-it.core
-  (:gen-class))
+  (:gen-class)
+  (:import (java.io FileNotFoundException)))
 
 (require '[clojure.string :as str]
+         '[clojure.data.generators :refer [weighted]]
+         '[clojure.edn :as edn]
+         '[clojure.core.match :refer [match]]
+         '[me.raynes.fs :as fs]
          '[word-it.extensions :as ext])
+
+(def profile-path (fs/expand-home "~/.wordit"))
 
 (defn read-dict
   [filename]
@@ -23,9 +30,30 @@
       {:from from, :to to, :dict (into [] trans)})))
 
 
+(defn read-profile
+  [filename]
+  (edn/read-string (slurp filename)))
+
+
+(defn write-profile [filename profile]
+  (spit filename (prn-str profile)))
+
+
+(defn rand-word [dict profile]
+  (if
+    (empty? profile)
+    (rand-nth dict)
+    (let [max-count (apply max (vals profile))
+          weights (into {} (for
+                             [[words trs] dict]
+                             [[words trs] (* max-count (/ 1 (get profile words 1)))]))]
+      (weighted weights))))
+
 (defn ask
-  [dicts lang-from lang-to]
-  (let [[words, translations] (rand-nth (dicts lang-from))
+  [dicts lang-from lang-to profile]
+  (let [[words, translations] (rand-word
+                                (dicts lang-from)
+                                (get-in profile [#{lang-from lang-to} lang-from] {}))
         transformation (get ext/transformations
                             [lang-from lang-to]
                             (constantly identity))
@@ -38,21 +66,30 @@
                          str/trim
                          transform))]
       (cond
-        (some #(= answer %) translations) :correct
-        (= answer "quit") :quit
-        :else (do (println (str/join ", " translations)) :wrong)))))
+        (some #(= answer %) translations) [:correct,
+                                           (update-in profile
+                                                      [#{lang-from lang-to} lang-from words]
+                                                      (fnil inc 0))]
+        (= answer "quit") [:quit,
+                           profile]
+        :else (do (println (str/join ", " translations)) [:wrong,
+                                                          profile])))))
 
 
 (defn -main [filename & args]
   (let [{from :from, to :to, dict :dict} (read-dict filename)
         dicts {from dict
                to   (map (fn [[from-words, to-words]] [to-words, from-words])
-                         dict)}]
+                         dict)}
+        init-profile (try
+                       (read-profile profile-path)
+                       (catch FileNotFoundException _ {}))]
     (loop [[from-lang, lang-to] (shuffle [from, to])
            total 0
-           wrong 0]
+           wrong 0
+           profile init-profile]
       (println)
-      (case (ask dicts from-lang lang-to)
-        :correct (recur (shuffle [from, to]) (inc total) wrong)
-        :wrong (recur (shuffle [from, to]) (inc total) (inc wrong))
-        :quit (println "Total:" total "wrong:", wrong)))))
+      (match (ask dicts from-lang lang-to profile)
+             [:correct new-profile] (recur (shuffle [from, to]) (inc total) wrong new-profile)
+             [:wrong new-profile] (recur (shuffle [from, to]) (inc total) (inc wrong) new-profile)
+             [:quit new-profile] (do (write-profile profile-path new-profile) (println "Total:" total "wrong:", wrong))))))
