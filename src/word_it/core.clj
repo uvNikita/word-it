@@ -21,6 +21,7 @@
           trans (->> dict-lines
                      (map str/trim)
                      (filter not-empty)
+                     (map str/lower-case)
                      (filter #(not (.startsWith % "#")))
                      (map #(str/split % #" - "))
                      (map (fn [line]
