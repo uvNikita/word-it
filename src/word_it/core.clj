@@ -6,10 +6,11 @@
          '[clojure.data.generators :refer [weighted]]
          '[clojure.edn :as edn]
          '[clojure.core.match :refer [match]]
+         '[clojure.core.async :as async :refer [<!, >!, <!!]]
          '[me.raynes.fs :as fs]
          '[word-it.extensions :as ext])
 
-(def profile-path (fs/expand-home "~/.wordit"))
+(def profile-path (fs/expand-home "~/.word-it"))
 
 (defn read-dict
   [filename]
@@ -27,8 +28,9 @@
                      (map (fn [line]
                             (->> line
                                  (map #(str/split % #","))
-                                 (map #(map str/trim %))))))]
-      {:from from, :to to, :dict (into [] trans)})))
+                                 (map #(map str/trim %))
+                                 (into [])))))]
+      {:from from, :to to, :dict (into {} trans)})))
 
 
 (defn read-profile
@@ -40,57 +42,113 @@
   (spit filename (prn-str profile)))
 
 
+(defn counter [ans-hist]
+  (loop
+    [total 0 wrong 0]
+    (let [answer (<!! ans-hist)]
+      (if (nil? answer)
+        {:total total, :wrong wrong}
+        (if (= :wrong (:result answer))
+          (recur (inc total) (inc wrong))
+          (recur (inc total) wrong))))))
+
+
 (defn rand-word [dict profile]
   (if
     (empty? profile)
-    (rand-nth dict)
+    (rand-nth (keys dict))
     (let [max-count (apply max (vals profile))
           weights (into {} (for
-                             [[words trs] dict]
-                             [[words trs] (* max-count (/ 1 (get profile words 1)))]))]
+                             [words (keys dict)]
+                             [words (* max-count (/ 1 (get profile words 1)))]))]
       (weighted weights))))
 
+
+(defn word-picker [dicts profile]
+  (let [words (async/chan 1)]
+    (do
+      (async/go
+        (while true
+          (let [[lang-from, lang-to] (shuffle (keys dicts))
+                curr-profile (get-in @profile [#{(keys dicts)} lang-from] {})
+                dict (dicts lang-from)]
+            (>! words {:lang-from lang-from
+                       :lang-to   lang-to
+                       :word      (rand-word dict curr-profile)}))))
+      words)))
+
+
+(defn update-profile [profile {lang :lang, word :word}]
+  (update-in profile [lang word] (fnil inc 0)))
+
+
+(defn profile-updater [profile correct-words]
+  (async/go-loop []
+    (let [word (<! correct-words)]
+      (when (some? word)
+        (do
+          (swap! profile update-profile word)
+          (recur))))))
+
+
 (defn ask
-  [dicts lang-from lang-to profile]
-  (let [[words, translations] (rand-word
-                                (dicts lang-from)
-                                (get-in profile [#{lang-from lang-to} lang-from] {}))
-        transformation (get ext/transformations
-                            [lang-from lang-to]
-                            (constantly identity))
-        transform (apply comp (map transformation words))
-        translations (map transform translations)]
-    (println (str lang-from, ":\t", (str/join ", " words)))
-    (let [answer (do (print (str lang-to, ":\t"))
-                     (flush)
-                     (-> (read-line)
-                         str/trim
-                         transform))]
-      (cond
-        (some #(= answer %) translations) [:correct,
-                                           (update-in profile
-                                                      [#{lang-from lang-to} lang-from words]
-                                                      (fnil inc 0))]
-        (= answer "quit") [:quit,
-                           profile]
-        :else (do (println (str/join ", " translations)) [:wrong,
-                                                          profile])))))
+  [dicts words ans-hist]
+  (async/go-loop []
+    (let [word (<! words)]
+      (when (some? word)
+        (let [{word :word lang-from :lang-from lang-to :lang-to} word
+              translation (get-in dicts [lang-from word])
+              transformation (get ext/transformations
+                                  [lang-from lang-to]
+                                  (constantly identity))
+              transform (apply comp (map transformation word))
+              translation (map transform translation)]
+          (println)
+          (println (str lang-from, ":\t", (str/join ", " word)))
+          (let [answer (do (print (str lang-to, ":\t"))
+                           (flush)
+                           (-> (read-line)
+                               str/trim
+                               transform))]
+            (cond
+              (some #(= answer %) translation) (do (>! ans-hist {:result :correct
+                                                                 :lang   lang-from
+                                                                 :word   word})
+                                                   (recur))
+              (= answer "quit") (async/close! ans-hist)
+              :else (do (println (str/join ", " translation))
+                        (>! ans-hist {:result :wrong
+                                      :lang   lang-from
+                                      :word   word})
+                        (recur)))))))))
 
 
 (defn -main [filename & args]
   (let [{from :from, to :to, dict :dict} (read-dict filename)
         dicts {from dict
-               to   (map (fn [[from-words, to-words]] [to-words, from-words])
-                         dict)}
-        init-profile (try
+               to   (into {} (map (fn [[from-words, to-words]] [to-words, from-words])
+                                  dict))}
+        full-profile (try
                        (read-profile profile-path)
-                       (catch FileNotFoundException _ {}))]
-    (loop [[from-lang, lang-to] (shuffle [from, to])
-           total 0
-           wrong 0
-           profile init-profile]
-      (println)
-      (match (ask dicts from-lang lang-to profile)
-             [:correct new-profile] (recur (shuffle [from, to]) (inc total) wrong new-profile)
-             [:wrong new-profile] (recur (shuffle [from, to]) (inc total) (inc wrong) new-profile)
-             [:quit new-profile] (do (write-profile profile-path new-profile) (println "Total:" total "wrong:", wrong))))))
+                       (catch FileNotFoundException _ {}))
+        lang-profile (full-profile #{from to})
+
+        ans-hist-buffer 5
+        ans-hist (async/chan ans-hist-buffer)
+        ans-hist-mult (async/mult ans-hist)
+        ans-hist-counter (async/tap ans-hist-mult (async/chan ans-hist-buffer))
+        ans-hist-correct (async/tap
+                           ans-hist-mult
+                           (async/chan 5 (comp (filter #(= :correct (:result %)))
+                                               (map #(select-keys % [:word :lang])))))
+
+        profile (atom lang-profile)
+        words (word-picker dicts profile)]
+    (do (profile-updater profile ans-hist-correct)
+        (ask dicts words ans-hist)
+        (let [{total :total, wrong :wrong} (counter ans-hist-counter)]
+          (do
+            (write-profile profile-path (assoc full-profile #{from to} @profile))
+            (println "Total:" total "wrong:", wrong)))
+        )))
+
