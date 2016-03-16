@@ -45,12 +45,11 @@
 (defn counter [ans-hist]
   (loop
     [total 0 wrong 0]
-    (let [answer (<!! ans-hist)]
-      (if (nil? answer)
-        {:total total, :wrong wrong}
-        (if (= :wrong (:result answer))
-          (recur (inc total) (inc wrong))
-          (recur (inc total) wrong))))))
+    (if-let [answer (<!! ans-hist)]
+      (if (= :wrong (:result answer))
+        (recur (inc total) (inc wrong))
+        (recur (inc total) wrong))
+      {:total total, :wrong wrong})))
 
 
 (defn rand-word [dict profile]
@@ -66,16 +65,15 @@
 
 (defn word-picker [dicts profile]
   (let [words (async/chan 1)]
-    (do
-      (async/go
-        (while true
-          (let [[lang-from, lang-to] (shuffle (keys dicts))
-                curr-profile (get-in @profile [#{(keys dicts)} lang-from] {})
-                dict (dicts lang-from)]
-            (>! words {:lang-from lang-from
-                       :lang-to   lang-to
-                       :word      (rand-word dict curr-profile)}))))
-      words)))
+    (async/go
+      (while true
+        (let [[lang-from, lang-to] (shuffle (keys dicts))
+              curr-profile (get-in @profile [#{(keys dicts)} lang-from] {})
+              dict (dicts lang-from)]
+          (>! words {:lang-from lang-from
+                     :lang-to   lang-to
+                     :word      (rand-word dict curr-profile)}))))
+    words))
 
 
 (defn update-profile [profile {lang :lang, word :word}]
@@ -84,43 +82,40 @@
 
 (defn profile-updater [profile correct-words]
   (async/go-loop []
-    (let [word (<! correct-words)]
-      (when (some? word)
-        (do
-          (swap! profile update-profile word)
-          (recur))))))
+    (when-let [word (<! correct-words)]
+      (swap! profile update-profile word)
+      (recur))))
 
 
 (defn ask
   [dicts words ans-hist]
   (async/go-loop []
-    (let [word (<! words)]
-      (when (some? word)
-        (let [{word :word lang-from :lang-from lang-to :lang-to} word
-              translation (get-in dicts [lang-from word])
-              transformation (get ext/transformations
-                                  [lang-from lang-to]
-                                  (constantly identity))
-              transform (apply comp (map transformation word))
-              translation (map transform translation)]
-          (println)
-          (println (str lang-from, ":\t", (str/join ", " word)))
-          (let [answer (do (print (str lang-to, ":\t"))
-                           (flush)
-                           (-> (read-line)
-                               str/trim
-                               transform))]
-            (cond
-              (some #(= answer %) translation) (do (>! ans-hist {:result :correct
-                                                                 :lang   lang-from
-                                                                 :word   word})
-                                                   (recur))
-              (= answer "quit") (async/close! ans-hist)
-              :else (do (println (str/join ", " translation))
-                        (>! ans-hist {:result :wrong
-                                      :lang   lang-from
-                                      :word   word})
-                        (recur)))))))))
+    (if-let [word (<! words)]
+      (let [{word :word lang-from :lang-from lang-to :lang-to} word
+            translation (get-in dicts [lang-from word])
+            transformation (get ext/transformations
+                                [lang-from lang-to]
+                                (constantly identity))
+            transform (apply comp (map transformation word))
+            translation (map transform translation)]
+        (println)
+        (println (str lang-from, ":\t", (str/join ", " word)))
+        (let [answer (do (print (str lang-to, ":\t"))
+                         (flush)
+                         (-> (read-line)
+                             str/trim
+                             transform))]
+          (cond
+            (some #(= answer %) translation) (do (>! ans-hist {:result :correct
+                                                               :lang   lang-from
+                                                               :word   word})
+                                                 (recur))
+            (= answer "quit") (async/close! ans-hist)
+            :else (do (println (str/join ", " translation))
+                      (>! ans-hist {:result :wrong
+                                    :lang   lang-from
+                                    :word   word})
+                      (recur))))))))
 
 
 (defn -main [filename & args]
@@ -139,16 +134,16 @@
         ans-hist-counter (async/tap ans-hist-mult (async/chan ans-hist-buffer))
         ans-hist-correct (async/tap
                            ans-hist-mult
-                           (async/chan 5 (comp (filter #(= :correct (:result %)))
-                                               (map #(select-keys % [:word :lang])))))
+                           (async/chan ans-hist-buffer
+                                       (comp (filter #(= :correct (:result %)))
+                                             (map #(select-keys % [:word :lang])))))
 
         profile (atom lang-profile)
         words (word-picker dicts profile)]
-    (do (profile-updater profile ans-hist-correct)
-        (ask dicts words ans-hist)
-        (let [{total :total, wrong :wrong} (counter ans-hist-counter)]
-          (do
-            (write-profile profile-path (assoc full-profile #{from to} @profile))
-            (println "Total:" total "wrong:", wrong)))
-        )))
+    (profile-updater profile ans-hist-correct)
+    (ask dicts words ans-hist)
+    (let [{total :total, wrong :wrong} (counter ans-hist-counter)]
+      (write-profile profile-path (assoc full-profile #{from to} @profile))
+      (println "Total:" total "wrong:", wrong))
+    ))
 
